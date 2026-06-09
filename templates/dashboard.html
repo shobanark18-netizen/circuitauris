@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CircuitAuris — PCB Inspection Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0c10;
+      color: #e8eaf0;
+      font-family: 'Courier New', monospace;
+      padding: 24px;
+    }
+    .header {
+      border-left: 3px solid #00e5ff;
+      padding-left: 16px;
+      margin-bottom: 32px;
+    }
+    .header h1 {
+      font-size: 24px;
+      color: #00e5ff;
+      letter-spacing: 2px;
+    }
+    .header p {
+      color: #6b7585;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #141820;
+      border: 1px solid #1e2530;
+      padding: 20px;
+    }
+    .card h3 {
+      font-size: 11px;
+      color: #6b7585;
+      letter-spacing: 2px;
+      margin-bottom: 12px;
+    }
+    .result {
+      font-size: 48px;
+      font-weight: bold;
+      letter-spacing: 4px;
+    }
+    .pass { color: #4caf50; }
+    .fail { color: #f44336; }
+    .ready { color: #00e5ff; }
+    .processing { color: #ffd600; }
+    .metric {
+      font-size: 28px;
+      color: #00e5ff;
+      font-weight: bold;
+    }
+    .defect-list {
+      list-style: none;
+      margin-top: 8px;
+    }
+    .defect-list li {
+      font-size: 12px;
+      color: #f44336;
+      padding: 4px 0;
+      border-bottom: 1px solid #1e2530;
+    }
+    .defect-list li.none {
+      color: #4caf50;
+    }
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .log-table th {
+      text-align: left;
+      padding: 8px 12px;
+      color: #6b7585;
+      border-bottom: 1px solid #1e2530;
+      letter-spacing: 1px;
+    }
+    .log-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #1e2530;
+      color: #b0b8c8;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .badge.pass { background: rgba(76,175,80,0.15); color: #4caf50; }
+    .badge.fail { background: rgba(244,67,54,0.15); color: #f44336; }
+    .timestamp {
+      font-size: 11px;
+      color: #6b7585;
+      margin-top: 4px;
+    }
+    .inspect-btn {
+      background: #00e5ff;
+      color: #0a0c10;
+      border: none;
+      padding: 12px 32px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 2px;
+      cursor: pointer;
+      margin-bottom: 24px;
+    }
+    .inspect-btn:hover { background: #00b8d4; }
+    .full-card {
+      background: #141820;
+      border: 1px solid #1e2530;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .full-card h3 {
+      font-size: 11px;
+      color: #6b7585;
+      letter-spacing: 2px;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>CIRCUITAURIS</h1>
+    <p>PCB Automated Optical Inspection System — Raspberry Pi 4</p>
+  </div>
+
+  <button class="inspect-btn" onclick="runInspection()">▶ RUN INSPECTION</button>
+
+  <div class="grid">
+    <div class="card">
+      <h3>RESULT</h3>
+      <div class="result ready" id="result">READY</div>
+      <div class="timestamp" id="timestamp">—</div>
+    </div>
+    <div class="card">
+      <h3>DEFECTS FOUND</h3>
+      <div class="metric" id="defect-count">—</div>
+    </div>
+  </div>
+
+  <div class="full-card">
+    <h3>DEFECT DETAILS</h3>
+    <ul class="defect-list" id="defect-list">
+      <li class="none">No inspection run yet</li>
+    </ul>
+  </div>
+
+  <div class="full-card">
+    <h3>INSPECTION LOG</h3>
+    <table class="log-table">
+      <thead>
+        <tr>
+          <th>TIME</th>
+          <th>RESULT</th>
+          <th>DEFECTS</th>
+        </tr>
+      </thead>
+      <tbody id="log-body">
+        <tr>
+          <td colspan="3" style="color:#6b7585">No inspections yet</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    function updateStatus() {
+      fetch('/status')
+        .then(r => r.json())
+        .then(d => {
+          const resultEl = document.getElementById('result');
+          resultEl.textContent = d.result;
+          resultEl.className = 'result ' + d.result.toLowerCase();
+          document.getElementById('timestamp').textContent = d.timestamp || '—';
+          document.getElementById('defect-count').textContent = d.defect_count ?? '—';
+          const list = document.getElementById('defect-list');
+          if (d.defects && d.defects.length > 0) {
+            list.innerHTML = d.defects.map(def =>
+              `<li>${def.type} — confidence: ${def.confidence}</li>`
+            ).join('');
+          } else if (d.result === 'PASS') {
+            list.innerHTML = '<li class="none">✓ No defects detected</li>';
+          }
+        });
+    }
+
+    function updateLog() {
+      fetch('/log')
+        .then(r => r.json())
+        .then(logs => {
+          const tbody = document.getElementById('log-body');
+          if (logs.length === 0) return;
+          tbody.innerHTML = logs.reverse().map(l =>
+            `<tr>
+              <td>${l.timestamp || '—'}</td>
+              <td><span class="badge ${l.result.toLowerCase()}">${l.result}</span></td>
+              <td>${l.defect_count}</td>
+            </tr>`
+          ).join('');
+        });
+    }
+
+    function runInspection() {
+      document.getElementById('result').textContent = 'PROCESSING';
+      document.getElementById('result').className = 'result processing';
+      fetch('/inspect', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+          updateStatus();
+          updateLog();
+        });
+    }
+
+    // Auto refresh every 3 seconds
+    setInterval(() => {
+      updateStatus();
+      updateLog();
+    }, 3000);
+
+    updateStatus();
+    updateLog();
+  </script>
+
+</body>
+</html>
