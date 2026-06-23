@@ -1,0 +1,11 @@
+*.pt
+*.onnx
+__pycache__/
+*.pyc
+aoi_env/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+wandb/
+runs/
