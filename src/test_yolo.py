@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from main import run_yolo_inference
 
-TEST_IMAGE = "data/test_images/PCB-design_testimage.jpg"
+TEST_IMAGE = "data/test_images/real_webcam_capture.jpg"
 
 
 def main():
