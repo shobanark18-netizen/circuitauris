@@ -3,14 +3,15 @@ CircuitAuris - Main Inspection Pipeline
 AOI prototype: button press -> capture -> inference -> LED result
 
 Hardware:
-- USB webcam (wide AOI shot)                   -> cv2.VideoCapture(0)
-- Pi Camera V3 (OCR close-up, via CSI)          -> picamera2 (TODO once wired up)
+- USB webcam (wide AOI shot)                   -> cv2.VideoCapture(2)
+- Pi Camera V3 (OCR close-up, via CSI)          -> picamera2
 - Push button on GPIO17
 - LEDs: Green=GPIO27 (PASS), Red=GPIO22 (FAIL), Yellow=GPIO23 (PROCESSING)
 """
 
 import cv2
 import time
+import shutil
 
 # ---------------- GPIO PIN ASSIGNMENTS ----------------
 BUTTON_PIN = 17
@@ -21,6 +22,9 @@ LED_YELLOW = 23  # PROCESSING
 # ---------------- YOLO MODEL (lazy-loaded once) ----------------
 MODEL_PATH = "models/baseline_best.pt"
 _yolo_model = None
+
+# ---------------- OCR READER (lazy-loaded once) ----------------
+_ocr_reader = None
 
 
 def get_yolo_model():
@@ -36,6 +40,20 @@ def get_yolo_model():
         _yolo_model = YOLO(MODEL_PATH)
         print("Model loaded.")
     return _yolo_model
+
+
+def get_ocr_reader():
+    """
+    Load the EasyOCR reader once and reuse it.
+    gpu=False is important - the Pi has no GPU.
+    """
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+        print("Loading EasyOCR reader...")
+        _ocr_reader = easyocr.Reader(['en'], gpu=False)
+        print("OCR reader loaded.")
+    return _ocr_reader
 
 
 def setup_gpio():
@@ -58,17 +76,19 @@ def leds_off(GPIO):
 
 
 def capture_image():
-    """Capture a wide AOI shot using the USB webcam (index 2)."""
-    import time
+    """
+    Capture a wide AOI shot using the USB webcam.
+    Index 2 because Pi Camera V3 (CSI) occupies /dev/video0 and /dev/video1.
+    Saves a copy to data/test_images/last_usb_capture.jpg for inspection.
+    """
     cap = cv2.VideoCapture(2, cv2.CAP_V4L2)
     if not cap.isOpened():
         raise RuntimeError("Could not open webcam at index 2 - check connection")
 
-    # Set resolution explicitly
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    # Give the camera time to fully initialize
+    # Give camera time to initialize
     time.sleep(2)
 
     # Warm up with dummy reads
@@ -76,6 +96,8 @@ def capture_image():
         cap.read()
 
     ret, frame = cap.read()
+    if ret:
+        cv2.imwrite('data/test_images/last_usb_capture.jpg', frame)
     cap.release()
 
     if not ret:
@@ -84,18 +106,15 @@ def capture_image():
     return frame
 
 
-
-
 def capture_ocr_image():
     """
     Capture a close-up shot using the Pi Camera V3 (CSI ribbon, picamera2).
-    Used for OCR on IC markings — higher resolution than the USB webcam,
-    with autofocus explicitly triggered before capture.
+    Used for OCR on IC markings.
     Position camera 10-15cm from the component for best results.
+    Saves a copy to data/test_images/last_v3_capture.jpg for inspection.
     """
     from picamera2 import Picamera2
     from libcamera import controls
-    import time
 
     picam2 = Picamera2()
     picam2.start()
@@ -105,22 +124,24 @@ def capture_ocr_image():
     picam2.capture_file('/tmp/ocr_capture.jpg')
     picam2.stop()
 
+    # Save a copy for viewing
+    shutil.copy('/tmp/ocr_capture.jpg', 'data/test_images/last_v3_capture.jpg')
+
     image = cv2.imread('/tmp/ocr_capture.jpg')
     if image is None:
         raise RuntimeError("Failed to read captured OCR image")
 
     return image
 
-def run_yolo_inference(image):
-    """
-    Run YOLO inference on a captured image (numpy array, BGR - as returned
-    by cv2.imread/cv2.VideoCapture).
 
+def run_yolo_inference(image, confidence_threshold=0.5):
+    """
+    Run YOLO inference on a captured image (numpy array, BGR).
     Returns: list of dicts, one per detection:
         {"class": str, "confidence": float, "bbox": [x1, y1, x2, y2]}
     """
     model = get_yolo_model()
-    results = model(image)
+    results = model(image, conf=confidence_threshold)
 
     detections = []
     for result in results:
@@ -129,7 +150,7 @@ def run_yolo_inference(image):
             detections.append({
                 "class": model.names[cls_id],
                 "confidence": float(box.conf[0]),
-                "bbox": box.xyxy[0].tolist(),  # [x1, y1, x2, y2]
+                "bbox": box.xyxy[0].tolist(),
             })
 
     return detections
@@ -137,11 +158,37 @@ def run_yolo_inference(image):
 
 def run_ocr(image):
     """
-    TODO: Run EasyOCR on cropped component regions to read IC markings.
-    Reference implementation: 4x upscale -> adaptive threshold -> denoise -> EasyOCR
-    See src/ocr_pipeline.py (to be written)
+    Run EasyOCR on a close-up image to read IC markings.
+    Pipeline: grayscale -> size cap -> 4x upscale -> adaptive threshold -> denoise -> EasyOCR
     """
-    raise NotImplementedError("OCR pipeline not yet implemented")
+    reader = get_ocr_reader()
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Cap size before upscaling to avoid OOM on Pi
+    h, w = gray.shape
+    max_dim = 300
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    upscaled = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    thresh = cv2.adaptiveThreshold(
+        upscaled, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+    )
+    denoised = cv2.fastNlMeansDenoising(thresh, h=10)
+
+    results = reader.readtext(denoised)
+
+    text_results = []
+    for (bbox, text, confidence) in results:
+        text_results.append({
+            "text": text,
+            "confidence": float(confidence),
+            "bbox": bbox,
+        })
+
+    return text_results
 
 
 def run_inspection(GPIO):
@@ -150,17 +197,24 @@ def run_inspection(GPIO):
     GPIO.output(LED_YELLOW, GPIO.HIGH)  # PROCESSING
 
     try:
+        # Wide shot via USB webcam -> YOLO defect detection
         image = capture_image()
         detections = run_yolo_inference(image)
 
-        # TODO: uncomment once run_ocr is implemented
-        # ocr_results = run_ocr(image)
+        # Close-up shot via Pi Camera V3 -> OCR component verification
+        ocr_image = capture_ocr_image()
+        try:
+            ocr_results = run_ocr(ocr_image)
+        except NotImplementedError:
+            ocr_results = []
+            print("OCR not yet implemented - skipping")
 
-        # TODO: combine detections + OCR results into a real PASS/FAIL decision.
-        # Placeholder logic for now: any detection at all = FAIL
+        # TODO: replace with real decision logic once dataset is ready
+        # For now: any YOLO detection = FAIL
         passed = len(detections) == 0
 
         print(f"Detections: {detections}")
+        print(f"OCR Results: {ocr_results}")
 
     except Exception as e:
         print(f"Inspection error: {e}")
