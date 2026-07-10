@@ -58,10 +58,22 @@ def leds_off(GPIO):
 
 
 def capture_image():
-    """Capture a wide AOI shot using the USB webcam (index 0)."""
-    cap = cv2.VideoCapture(0)
+    """Capture a wide AOI shot using the USB webcam (index 2)."""
+    import time
+    cap = cv2.VideoCapture(2, cv2.CAP_V4L2)
     if not cap.isOpened():
-        raise RuntimeError("Could not open webcam at index 0 - check connection")
+        raise RuntimeError("Could not open webcam at index 2 - check connection")
+
+    # Set resolution explicitly
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    # Give the camera time to fully initialize
+    time.sleep(2)
+
+    # Warm up with dummy reads
+    for _ in range(5):
+        cap.read()
 
     ret, frame = cap.read()
     cap.release()
@@ -71,6 +83,33 @@ def capture_image():
 
     return frame
 
+
+
+
+def capture_ocr_image():
+    """
+    Capture a close-up shot using the Pi Camera V3 (CSI ribbon, picamera2).
+    Used for OCR on IC markings — higher resolution than the USB webcam,
+    with autofocus explicitly triggered before capture.
+    Position camera 10-15cm from the component for best results.
+    """
+    from picamera2 import Picamera2
+    from libcamera import controls
+    import time
+
+    picam2 = Picamera2()
+    picam2.start()
+    time.sleep(2)
+    picam2.set_controls({'AfMode': controls.AfModeEnum.Continuous})
+    time.sleep(3)  # wait for autofocus to lock
+    picam2.capture_file('/tmp/ocr_capture.jpg')
+    picam2.stop()
+
+    image = cv2.imread('/tmp/ocr_capture.jpg')
+    if image is None:
+        raise RuntimeError("Failed to read captured OCR image")
+
+    return image
 
 def run_yolo_inference(image):
     """
